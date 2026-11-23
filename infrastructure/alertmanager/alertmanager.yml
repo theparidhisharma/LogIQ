@@ -1,0 +1,12 @@
+# Routes all LogIQ alerts to a webhook. Set ALERT_WEBHOOK_URL in your deployment
+# (replace the placeholder below); until then alerts are visible in Alertmanager's UI at :9093.
+route:
+  receiver: default
+  group_by: [alertname, job, instance]
+  group_wait: 30s
+  repeat_interval: 2h
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://localhost:65535/replace-with-real-webhook
+        send_resolved: true

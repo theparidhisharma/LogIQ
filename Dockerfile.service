@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY shared ./shared
+COPY services ./services
+COPY migrations ./migrations
+COPY migrations_dataset ./migrations_dataset
+COPY alembic.ini ./alembic.ini
+COPY alembic_identity.ini ./alembic_identity.ini
+COPY alembic_dataset.ini ./alembic_dataset.ini
+ARG SERVICE_MODULE=services.collection.main:app
+ENV SERVICE_MODULE=${SERVICE_MODULE} PYTHONPATH=/app
+CMD ["sh","-c","uvicorn ${SERVICE_MODULE} --host 0.0.0.0 --port 8000"]

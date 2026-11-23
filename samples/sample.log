@@ -1,0 +1,5 @@
+2026-11-20T07:00:00Z INFO api-gateway request_id=abc123 status=200 latency_ms=42
+2026-11-20T07:00:01Z INFO auth-service user 1042 authenticated
+2026-11-20T07:00:02Z WARN payment-service retry attempt 2 for transaction 88391
+2026-11-20T07:00:03Z ERROR inventory-service database connection failed code 503
+2026-11-20T07:00:04Z INFO api-gateway request_id=def456 status=200 latency_ms=31

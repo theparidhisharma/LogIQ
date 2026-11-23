@@ -1,0 +1,380 @@
+name: logiq
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: logiq_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-logiq-admin-dev-only}
+      POSTGRES_DB: postgres
+      DATASET_DB_PASSWORD: ${DATASET_DB_PASSWORD:-logiq-dataset-dev-only}
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-databases.sh:/docker-entrypoint-initdb.d/01-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logiq_admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+    depends_on:
+      postgres: {condition: service_healthy}
+  migrate-identity:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["alembic", "-c", "alembic_identity.ini", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+    depends_on:
+      postgres: {condition: service_healthy}
+  migrate-dataset:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["alembic", "-c", "alembic_dataset.ini", "upgrade", "head"]
+    environment:
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+    depends_on:
+      postgres: {condition: service_healthy}
+  kafka:
+    restart: unless-stopped
+    image: apache/kafka:3.7.0
+    ports: ["9092:9092"]
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+    volumes: ["kafka_data:/var/lib/kafka/data"]
+
+  minio:
+    restart: unless-stopped
+    image: chrislusf/seaweedfs:latest
+    command: ["server", "-s3", "-s3.port=9000", "-dir=/data"]
+    ports: ["9000:9000"]
+    volumes: ["minio_data:/data"]    
+
+
+  collection:
+    restart: unless-stopped
+    ports: ["8001:8000"]
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.collection.main:app}
+    environment:
+      SERVICE_NAME: collection
+      LOGIQ_OTLP_INGEST_TOKEN: ${LOGIQ_OTLP_INGEST_TOKEN:-local-otel-token-change-me}
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      migrate-identity: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  dataset:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.dataset.main:app}
+    environment:
+      SERVICE_NAME: dataset
+      DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-logiq}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-logiq-secret-change-me}
+      MINIO_BUCKET: ${MINIO_BUCKET:-logiq-raw-datasets}
+      DATASET_MAX_UPLOAD_BYTES: ${DATASET_MAX_UPLOAD_BYTES:-5368709120}
+    depends_on:
+      migrate-dataset: {condition: service_completed_successfully}
+      migrate-identity: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+      minio: {condition: service_started}
+  preprocessing:
+    restart: unless-stopped
+    ports: ["8002:8000"]
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.preprocessing.main:app}
+    environment:
+      SERVICE_NAME: preprocessing
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  parser:
+    restart: unless-stopped
+    ports: ["8003:8000"]
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.parser.main:app}
+    environment:
+      SERVICE_NAME: parser
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      DATASET_DATABASE_URL: postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      migrate-dataset: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  intelligence:
+    restart: unless-stopped
+    ports: ["8004:8000"]
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.intelligence.main:app}
+    environment:
+      SERVICE_NAME: intelligence
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  preprocessing-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.preprocessing.worker"]
+    environment:
+      METRICS_PORT: 9100
+      SERVICE_NAME: preprocessing-worker
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  parser-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.parser.worker"]
+    environment:
+      METRICS_PORT: 9100
+      SERVICE_NAME: parser-worker
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      DATASET_DATABASE_URL: postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      migrate-dataset: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  intelligence-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.intelligence.worker"]
+    environment:
+      METRICS_PORT: 9100
+      SERVICE_NAME: intelligence-worker
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  dataset-publisher-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.dataset.publisher_worker"]
+    environment:
+      SERVICE_NAME: dataset-publisher-worker
+      METRICS_PORT: 9100
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-logiq}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-logiq-secret-change-me}
+      MINIO_BUCKET: ${MINIO_BUCKET:-logiq-raw-datasets}
+      DATASET_PUBLISH_BATCH_SIZE: 500
+    depends_on:
+      migrate-dataset: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+      minio: {condition: service_started}
+  dataset-deletion-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.dataset.deletion_worker"]
+    environment:
+      SERVICE_NAME: dataset-deletion-worker
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-logiq}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-logiq-secret-change-me}
+      MINIO_BUCKET: ${MINIO_BUCKET:-logiq-raw-datasets}
+    depends_on:
+      migrate-dataset: {condition: service_completed_successfully}
+      minio: {condition: service_started}
+  dataset-deletion-ack-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.dataset.deletion_ack_worker"]
+    environment:
+      SERVICE_NAME: dataset-deletion-ack-worker
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate-dataset: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  dataset-progress-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.dataset.progress_worker"]
+    environment:
+      METRICS_PORT: 9100
+      SERVICE_NAME: dataset-progress-worker
+      DATASET_DATABASE_URL: ${DATASET_DATABASE_URL:-postgresql+psycopg://logiq_dataset:logiq-dataset-dev-only@postgres:5432/logiq_dataset}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate-dataset: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  intelligence-deletion-worker:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    command: ["python", "-m", "services.intelligence.deletion_worker"]
+    environment:
+      SERVICE_NAME: intelligence-deletion-worker
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      kafka: {condition: service_started}
+  analytics:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.analytics.main:app}
+    environment:
+      SERVICE_NAME: analytics
+      DATABASE_URL: postgresql+psycopg://logiq_core:logiq-core-dev-only@postgres:5432/logiq_core
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      migrate-identity: {condition: service_completed_successfully}
+  identity:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.identity.main:app}
+    environment:
+      SERVICE_NAME: identity
+      DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      IDENTITY_DATABASE_URL: postgresql+psycopg://logiq_identity:logiq-identity-dev-only@postgres:5432/logiq_identity
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LOGIQ_JWT_SECRET: ${LOGIQ_JWT_SECRET:-development-only-change-this-secret}
+      LOGIQ_JWT_TTL_SECONDS: ${LOGIQ_JWT_TTL_SECONDS:-3600}
+      LOGIQ_API_KEY_PEPPER: ${LOGIQ_API_KEY_PEPPER:-}
+    depends_on:
+      migrate-identity: {condition: service_completed_successfully}
+  gateway:
+    restart: unless-stopped
+    environment:
+      SERVICE_NAME: gateway
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_MODULE: services.gateway.main:app}
+    ports: ["8080:8000"]
+    depends_on: [collection, dataset, analytics, identity]
+  frontend:
+    restart: unless-stopped
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on: [gateway]
+  prometheus:
+    restart: unless-stopped
+    image: prom/prometheus:v2.55.1
+    ports: ["9090:9090"]
+    volumes: ["./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro", "./infrastructure/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro"]
+  grafana:
+    restart: unless-stopped
+    image: grafana/grafana:11.4.0
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - "./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro"
+  otel-collector:
+    restart: unless-stopped
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    ports: ["4317:4317", "4318:4318"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes: ["./infrastructure/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro", "otel_data:/var/log/otel"]
+    environment:
+      LOGIQ_OTLP_INGEST_TOKEN: ${LOGIQ_OTLP_INGEST_TOKEN:-local-otel-token-change-me}
+    depends_on: [collection]
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    ports: ["9093:9093"]
+    volumes: ["./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
+volumes:
+  pgdata: {}
+  kafka_data: {}
+  minio_data: {}
+  otel_data: {}

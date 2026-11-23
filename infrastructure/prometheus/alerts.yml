@@ -1,0 +1,43 @@
+groups:
+  - name: logiq-availability
+    rules:
+      - alert: LogIQApiDown
+        expr: up{job="logiq-apis"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "LogIQ API {{ $labels.instance }} is unreachable"
+          description: "Prometheus cannot scrape this API's /metrics endpoint. Check the container and its logs."
+      - alert: LogIQWorkerDown
+        expr: up{job="logiq-workers"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "LogIQ worker {{ $labels.instance }} metrics endpoint is down"
+          description: "The worker process or its metrics listener has stopped."
+      - alert: LogIQWorkerDisconnected
+        expr: logiq_worker_connected == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "LogIQ worker {{ $labels.service }} has no Kafka partitions assigned"
+          description: "The worker is reconnecting or cannot reach Kafka. It is not processing messages."
+      - alert: LogIQWorkerHeartbeatStale
+        expr: time() - logiq_worker_last_heartbeat_timestamp_seconds > 120
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "LogIQ worker {{ $labels.service }} heartbeat is stale"
+          description: "No heartbeat for over 2 minutes; the worker may be stalled."
+      - alert: LogIQDeadLetters
+        expr: increase(logiq_worker_messages_failed_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "LogIQ worker {{ $labels.service }} is sending messages to the dead-letter topic"
+          description: "Messages failed all retries in the last 10 minutes. Inspect the *.dlq topic."
+      - alert: LogIQHighHttp5xxRate
+        expr: sum by (service) (rate(logiq_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum by (service) (rate(logiq_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "LogIQ {{ $labels.service }} 5xx rate exceeds 5 percent"

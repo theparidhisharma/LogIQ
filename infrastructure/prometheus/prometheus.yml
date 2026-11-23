@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: logiq-apis
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - gateway:8000
+          - collection:8000
+          - dataset:8000
+          - preprocessing:8000
+          - parser:8000
+          - intelligence:8000
+          - analytics:8000
+          - identity:8000
+  - job_name: logiq-workers
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - preprocessing-worker:9100
+          - parser-worker:9100
+          - intelligence-worker:9100
+          - dataset-publisher-worker:9100
+          - dataset-progress-worker:9100
+  - job_name: otel-collector
+    static_configs:
+      - targets: [otel-collector:8888]
