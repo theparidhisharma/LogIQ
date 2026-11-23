@@ -1946,7 +1946,7 @@ const PublicWebsite = ({
             : 'bg-[#101112] border-[#303438]/60'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-8">
           {/* Left: LOGIQ Wordmark */}
           <div className="flex items-center gap-6">
             <button
@@ -1964,7 +1964,7 @@ const PublicWebsite = ({
           </div>
 
           {/* Centre/Right Desktop Links */}
-          <nav className="hidden md:flex items-center gap-6 text-xs text-[#A1A5A5]">
+          <nav className="hidden md:flex items-center gap-6 text-xs text-[#A1A5A5] whitespace-nowrap">
             <button
               onClick={() => scrollToSection('capabilities')}
               className="hover:text-[#ECEDEA] transition-colors"
@@ -2000,7 +2000,7 @@ const PublicWebsite = ({
           </nav>
 
           {/* Right Actions */}
-          <div className="hidden md:flex items-center gap-3">
+          <div className="hidden md:flex items-center gap-3 shrink-0">
             <a
               href="#github-repository-placeholder"
               onClick={(e) => {
